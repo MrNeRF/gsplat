@@ -4,7 +4,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../../genindex.html"><link rel="search" title="Search" href="../../../search.html">
 
-    <!-- Generated with Sphinx 7.4.7 and Furo 2025.12.19 -->
+    <!-- Generated with Sphinx 8.1.3 and Furo 2025.12.19 -->
         <title>gsplat.strategy.mcmc - gsplat documentation</title>
       <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../../_static/styles/furo.css?v=7bdb33bb" />
@@ -244,8 +244,10 @@
   <p class="caption" role="heading"><span class="caption-text">Examples</span></p>
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../../../examples/colmap.html">Fit a COLMAP Capture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../examples/dynamic_surgical.html">Dynamic Surgical Scene Reconstruction (G-SHARP port, experimental)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../examples/image.html">Fit a Single Image</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../examples/large_scale.html">Render a Large Scene</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../examples/ncore.html">Train on an NCore v4 Capture</a></li>
 </ul>
 <p class="caption" role="heading"><span class="caption-text">Conventions</span></p>
 <ul>
@@ -254,6 +256,7 @@
 <p class="caption" role="heading"><span class="caption-text">Python API</span></p>
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../../../apis/compression.html">Compression</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../apis/contrib.html">gsplat.contrib (experimental)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../apis/rasterization.html">Rasterization</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../apis/strategy.html">Densification</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../apis/utils.html">Utils</a></li>
@@ -268,6 +271,10 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../../../migration/migration_inria.html">Migrate from diff-gaussian-rasterization</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../migration/migration_legacy.html">Migrate from gsplat v0.1.11</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Proposals</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../proposals/gsharp_v0_2_port.html">G-SHARP v0.2 Integration Proposal</a></li>
 </ul>
 
 </div>
@@ -301,15 +308,42 @@
         </div>
         <article role="main" id="furo-main-content">
           <h1>Source code for gsplat.strategy.mcmc</h1><div class="highlight"><pre>
-<span></span><span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
+<span></span><span class="c1"># SPDX-FileCopyrightText: Copyright 2024 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.</span>
+<span class="c1"># SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
+<span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="c1"># You may obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1"># http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="c1"># limitations under the License.</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">Union</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">TYPE_CHECKING</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">Union</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">torch</span><span class="w"> </span><span class="kn">import</span> <span class="n">Tensor</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">.base</span><span class="w"> </span><span class="kn">import</span> <span class="n">Strategy</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.ops</span><span class="w"> </span><span class="kn">import</span> <span class="n">inject_noise_to_position</span><span class="p">,</span> <span class="n">relocate</span><span class="p">,</span> <span class="n">sample_add</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.ops</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">DEFAULT_MCMC_OPACITY_K</span><span class="p">,</span>
+    <span class="n">DEFAULT_MCMC_OPACITY_T</span><span class="p">,</span>
+    <span class="n">inject_noise_to_position</span><span class="p">,</span>
+    <span class="n">relocate</span><span class="p">,</span>
+    <span class="n">sample_add</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="k">if</span> <span class="n">TYPE_CHECKING</span><span class="p">:</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">gsplat.scene</span><span class="w"> </span><span class="kn">import</span> <span class="n">Scene</span>
 
 
 <div class="viewcode-block" id="MCMCStrategy">
@@ -336,6 +370,10 @@
 <span class="sd">        refine_every (int): Refine GSs every this steps. Default to 100.</span>
 <span class="sd">        min_opacity (float): GSs with opacity below this value will be pruned. Default to 0.005.</span>
 <span class="sd">        verbose (bool): Whether to print verbose information. Default to False.</span>
+<span class="sd">        noise_opacity_t (float): Opacity transition point for noise suppression.</span>
+<span class="sd">            Default to 0.005.</span>
+<span class="sd">        noise_opacity_k (float): Sharpness of the opacity noise-suppression gate.</span>
+<span class="sd">            Default to 100.</span>
 
 <span class="sd">    Examples:</span>
 
@@ -361,6 +399,8 @@
     <span class="n">refine_every</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">100</span>
     <span class="n">min_opacity</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.005</span>
     <span class="n">verbose</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
+    <span class="n">noise_opacity_t</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">DEFAULT_MCMC_OPACITY_T</span>
+    <span class="n">noise_opacity_k</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">DEFAULT_MCMC_OPACITY_K</span>
 
 <div class="viewcode-block" id="MCMCStrategy.initialize_state">
 <a class="viewcode-back" href="../../../apis/strategy.html#gsplat.MCMCStrategy.initialize_state">[docs]</a>
@@ -424,6 +464,7 @@
         <span class="n">step</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
         <span class="n">info</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
         <span class="n">lr</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+        <span class="n">scene</span><span class="p">:</span> <span class="n">Scene</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Callback function to be executed after the `loss.backward()` call.</span>
 
@@ -441,12 +482,12 @@
             <span class="ow">and</span> <span class="n">step</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">refine_every</span> <span class="o">==</span> <span class="mi">0</span>
         <span class="p">):</span>
             <span class="c1"># teleport GSs</span>
-            <span class="n">n_relocated_gs</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_relocate_gs</span><span class="p">(</span><span class="n">params</span><span class="p">,</span> <span class="n">optimizers</span><span class="p">,</span> <span class="n">binoms</span><span class="p">)</span>
+            <span class="n">n_relocated_gs</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_relocate_gs</span><span class="p">(</span><span class="n">params</span><span class="p">,</span> <span class="n">optimizers</span><span class="p">,</span> <span class="n">binoms</span><span class="p">,</span> <span class="n">scene</span><span class="o">=</span><span class="n">scene</span><span class="p">)</span>
             <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">verbose</span><span class="p">:</span>
                 <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Step </span><span class="si">{</span><span class="n">step</span><span class="si">}</span><span class="s2">: Relocated </span><span class="si">{</span><span class="n">n_relocated_gs</span><span class="si">}</span><span class="s2"> GSs.&quot;</span><span class="p">)</span>
 
             <span class="c1"># add new GSs</span>
-            <span class="n">n_new_gs</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_add_new_gs</span><span class="p">(</span><span class="n">params</span><span class="p">,</span> <span class="n">optimizers</span><span class="p">,</span> <span class="n">binoms</span><span class="p">)</span>
+            <span class="n">n_new_gs</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_add_new_gs</span><span class="p">(</span><span class="n">params</span><span class="p">,</span> <span class="n">optimizers</span><span class="p">,</span> <span class="n">binoms</span><span class="p">,</span> <span class="n">scene</span><span class="o">=</span><span class="n">scene</span><span class="p">)</span>
             <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">verbose</span><span class="p">:</span>
                 <span class="nb">print</span><span class="p">(</span>
                     <span class="sa">f</span><span class="s2">&quot;Step </span><span class="si">{</span><span class="n">step</span><span class="si">}</span><span class="s2">: Added </span><span class="si">{</span><span class="n">n_new_gs</span><span class="si">}</span><span class="s2"> GSs. &quot;</span>
@@ -466,7 +507,9 @@
                 <span class="n">params</span><span class="o">=</span><span class="n">params</span><span class="p">,</span>
                 <span class="n">optimizers</span><span class="o">=</span><span class="n">optimizers</span><span class="p">,</span>
                 <span class="n">state</span><span class="o">=</span><span class="p">{},</span>
-                <span class="n">scaler</span><span class="o">=</span><span class="n">lr</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">noise_lr</span><span class="p">,</span>
+                <span class="n">noise_scale</span><span class="o">=</span><span class="n">lr</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">noise_lr</span><span class="p">,</span>
+                <span class="n">t</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">noise_opacity_t</span><span class="p">,</span>
+                <span class="n">k</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">noise_opacity_k</span><span class="p">,</span>
             <span class="p">)</span></div>
 
 
@@ -476,6 +519,7 @@
         <span class="n">params</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Parameter</span><span class="p">],</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">ParameterDict</span><span class="p">],</span>
         <span class="n">optimizers</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">optim</span><span class="o">.</span><span class="n">Optimizer</span><span class="p">],</span>
         <span class="n">binoms</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>
+        <span class="n">scene</span><span class="p">:</span> <span class="n">Scene</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
         <span class="n">opacities</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">sigmoid</span><span class="p">(</span><span class="n">params</span><span class="p">[</span><span class="s2">&quot;opacities&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">flatten</span><span class="p">())</span>
         <span class="n">dead_mask</span> <span class="o">=</span> <span class="n">opacities</span> <span class="o">&lt;=</span> <span class="bp">self</span><span class="o">.</span><span class="n">min_opacity</span>
@@ -488,6 +532,7 @@
                 <span class="n">mask</span><span class="o">=</span><span class="n">dead_mask</span><span class="p">,</span>
                 <span class="n">binoms</span><span class="o">=</span><span class="n">binoms</span><span class="p">,</span>
                 <span class="n">min_opacity</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">min_opacity</span><span class="p">,</span>
+                <span class="n">scene</span><span class="o">=</span><span class="n">scene</span><span class="p">,</span>
             <span class="p">)</span>
         <span class="k">return</span> <span class="n">n_gs</span>
 
@@ -497,6 +542,7 @@
         <span class="n">params</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Parameter</span><span class="p">],</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">ParameterDict</span><span class="p">],</span>
         <span class="n">optimizers</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">optim</span><span class="o">.</span><span class="n">Optimizer</span><span class="p">],</span>
         <span class="n">binoms</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>
+        <span class="n">scene</span><span class="p">:</span> <span class="n">Scene</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
         <span class="n">current_n_points</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">params</span><span class="p">[</span><span class="s2">&quot;means&quot;</span><span class="p">])</span>
         <span class="n">n_target</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">cap_max</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="mf">1.05</span> <span class="o">*</span> <span class="n">current_n_points</span><span class="p">))</span>
@@ -509,6 +555,7 @@
                 <span class="n">n</span><span class="o">=</span><span class="n">n_gs</span><span class="p">,</span>
                 <span class="n">binoms</span><span class="o">=</span><span class="n">binoms</span><span class="p">,</span>
                 <span class="n">min_opacity</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">min_opacity</span><span class="p">,</span>
+                <span class="n">scene</span><span class="o">=</span><span class="n">scene</span><span class="p">,</span>
             <span class="p">)</span>
         <span class="k">return</span> <span class="n">n_gs</span></div>
 
@@ -545,7 +592,7 @@
     </aside>
   </div>
 </div><script src="../../../_static/documentation_options.js?v=5929fcd5"></script>
-    <script src="../../../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../../../_static/doctools.js?v=9bcbadda"></script>
     <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../_static/scripts/furo.js?v=46bd48cc"></script>
     </body>

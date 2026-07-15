@@ -4,7 +4,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../../genindex.html"><link rel="search" title="Search" href="../../../search.html">
 
-    <!-- Generated with Sphinx 7.4.7 and Furo 2025.12.19 -->
+    <!-- Generated with Sphinx 8.1.3 and Furo 2025.12.19 -->
         <title>gsplat.cuda._torch_impl - gsplat documentation</title>
       <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../../../_static/styles/furo.css?v=7bdb33bb" />
@@ -244,8 +244,10 @@
   <p class="caption" role="heading"><span class="caption-text">Examples</span></p>
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../../../examples/colmap.html">Fit a COLMAP Capture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../examples/dynamic_surgical.html">Dynamic Surgical Scene Reconstruction (G-SHARP port, experimental)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../examples/image.html">Fit a Single Image</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../examples/large_scale.html">Render a Large Scene</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../examples/ncore.html">Train on an NCore v4 Capture</a></li>
 </ul>
 <p class="caption" role="heading"><span class="caption-text">Conventions</span></p>
 <ul>
@@ -254,6 +256,7 @@
 <p class="caption" role="heading"><span class="caption-text">Python API</span></p>
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../../../apis/compression.html">Compression</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../apis/contrib.html">gsplat.contrib (experimental)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../apis/rasterization.html">Rasterization</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../apis/strategy.html">Densification</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../apis/utils.html">Utils</a></li>
@@ -268,6 +271,10 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../../../migration/migration_inria.html">Migrate from diff-gaussian-rasterization</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../migration/migration_legacy.html">Migrate from gsplat v0.1.11</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Proposals</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../proposals/gsharp_v0_2_port.html">G-SHARP v0.2 Integration Proposal</a></li>
 </ul>
 
 </div>
@@ -301,7 +308,23 @@
         </div>
         <article role="main" id="furo-main-content">
           <h1>Source code for gsplat.cuda._torch_impl</h1><div class="highlight"><pre>
-<span></span><span class="kn">import</span><span class="w"> </span><span class="nn">struct</span>
+<span></span><span class="c1"># SPDX-FileCopyrightText: Copyright 2024-2026 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.</span>
+<span class="c1"># SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
+<span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="c1"># You may obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1"># http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="c1"># limitations under the License.</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">struct</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Tuple</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
@@ -310,72 +333,31 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">torch</span><span class="w"> </span><span class="kn">import</span> <span class="n">Tensor</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing_extensions</span><span class="w"> </span><span class="kn">import</span> <span class="n">Literal</span><span class="p">,</span> <span class="n">assert_never</span>
 
-
-<span class="k">def</span><span class="w"> </span><span class="nf">_quat_to_rotmat</span><span class="p">(</span><span class="n">quats</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tensor</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Convert quaternion to rotation matrix.&quot;&quot;&quot;</span>
-    <span class="n">quats</span> <span class="o">=</span> <span class="n">F</span><span class="o">.</span><span class="n">normalize</span><span class="p">(</span><span class="n">quats</span><span class="p">,</span> <span class="n">p</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="n">dim</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>
-    <span class="n">w</span><span class="p">,</span> <span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">z</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">unbind</span><span class="p">(</span><span class="n">quats</span><span class="p">,</span> <span class="n">dim</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>
-    <span class="n">R</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">stack</span><span class="p">(</span>
-        <span class="p">[</span>
-            <span class="mi">1</span> <span class="o">-</span> <span class="mi">2</span> <span class="o">*</span> <span class="p">(</span><span class="n">y</span><span class="o">**</span><span class="mi">2</span> <span class="o">+</span> <span class="n">z</span><span class="o">**</span><span class="mi">2</span><span class="p">),</span>
-            <span class="mi">2</span> <span class="o">*</span> <span class="p">(</span><span class="n">x</span> <span class="o">*</span> <span class="n">y</span> <span class="o">-</span> <span class="n">w</span> <span class="o">*</span> <span class="n">z</span><span class="p">),</span>
-            <span class="mi">2</span> <span class="o">*</span> <span class="p">(</span><span class="n">x</span> <span class="o">*</span> <span class="n">z</span> <span class="o">+</span> <span class="n">w</span> <span class="o">*</span> <span class="n">y</span><span class="p">),</span>
-            <span class="mi">2</span> <span class="o">*</span> <span class="p">(</span><span class="n">x</span> <span class="o">*</span> <span class="n">y</span> <span class="o">+</span> <span class="n">w</span> <span class="o">*</span> <span class="n">z</span><span class="p">),</span>
-            <span class="mi">1</span> <span class="o">-</span> <span class="mi">2</span> <span class="o">*</span> <span class="p">(</span><span class="n">x</span><span class="o">**</span><span class="mi">2</span> <span class="o">+</span> <span class="n">z</span><span class="o">**</span><span class="mi">2</span><span class="p">),</span>
-            <span class="mi">2</span> <span class="o">*</span> <span class="p">(</span><span class="n">y</span> <span class="o">*</span> <span class="n">z</span> <span class="o">-</span> <span class="n">w</span> <span class="o">*</span> <span class="n">x</span><span class="p">),</span>
-            <span class="mi">2</span> <span class="o">*</span> <span class="p">(</span><span class="n">x</span> <span class="o">*</span> <span class="n">z</span> <span class="o">-</span> <span class="n">w</span> <span class="o">*</span> <span class="n">y</span><span class="p">),</span>
-            <span class="mi">2</span> <span class="o">*</span> <span class="p">(</span><span class="n">y</span> <span class="o">*</span> <span class="n">z</span> <span class="o">+</span> <span class="n">w</span> <span class="o">*</span> <span class="n">x</span><span class="p">),</span>
-            <span class="mi">1</span> <span class="o">-</span> <span class="mi">2</span> <span class="o">*</span> <span class="p">(</span><span class="n">x</span><span class="o">**</span><span class="mi">2</span> <span class="o">+</span> <span class="n">y</span><span class="o">**</span><span class="mi">2</span><span class="p">),</span>
-        <span class="p">],</span>
-        <span class="n">dim</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span>
-    <span class="p">)</span>
-    <span class="k">return</span> <span class="n">R</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">quats</span><span class="o">.</span><span class="n">shape</span><span class="p">[:</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">+</span> <span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">._math</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">_safe_normalize</span><span class="p">,</span>
+    <span class="n">_rotmat_to_quat</span><span class="p">,</span>
+    <span class="n">_quat_inverse</span><span class="p">,</span>
+    <span class="n">_quat_rotate</span><span class="p">,</span>
+    <span class="n">_quat_to_rotmat</span><span class="p">,</span>
+    <span class="n">_quat_multiply</span><span class="p">,</span>
+    <span class="n">_quat_slerp</span><span class="p">,</span>
+    <span class="n">_quat_scale_to_preci_half</span><span class="p">,</span>
+    <span class="n">_quat_scale_to_matrix</span><span class="p">,</span>
+    <span class="n">_quat_scale_to_covar_preci</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">._wrapper</span><span class="w"> </span><span class="kn">import</span> <span class="n">CameraModel</span><span class="p">,</span> <span class="n">RollingShutterType</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">._constants</span><span class="w"> </span><span class="kn">import</span> <span class="n">MAX_ALPHA</span><span class="p">,</span> <span class="n">MIN_COMPENSATION</span>
 
 
-<span class="k">def</span><span class="w"> </span><span class="nf">_quat_scale_to_matrix</span><span class="p">(</span>
-    <span class="n">quats</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [..., 4],</span>
-    <span class="n">scales</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [..., 3],</span>
-<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tensor</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Convert quaternion and scale to a 3x3 matrix (R * S).&quot;&quot;&quot;</span>
-    <span class="n">batch_dims</span> <span class="o">=</span> <span class="n">quats</span><span class="o">.</span><span class="n">shape</span><span class="p">[:</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
-    <span class="k">assert</span> <span class="n">quats</span><span class="o">.</span><span class="n">shape</span> <span class="o">==</span> <span class="n">batch_dims</span> <span class="o">+</span> <span class="p">(</span><span class="mi">4</span><span class="p">,),</span> <span class="n">quats</span><span class="o">.</span><span class="n">shape</span>
-    <span class="k">assert</span> <span class="n">scales</span><span class="o">.</span><span class="n">shape</span> <span class="o">==</span> <span class="n">batch_dims</span> <span class="o">+</span> <span class="p">(</span><span class="mi">3</span><span class="p">,),</span> <span class="n">scales</span><span class="o">.</span><span class="n">shape</span>
-    <span class="n">R</span> <span class="o">=</span> <span class="n">_quat_to_rotmat</span><span class="p">(</span><span class="n">quats</span><span class="p">)</span>  <span class="c1"># [..., 3, 3]</span>
-    <span class="n">M</span> <span class="o">=</span> <span class="n">R</span> <span class="o">*</span> <span class="n">scales</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="p">:]</span>  <span class="c1"># [..., 3, 3]</span>
-    <span class="k">return</span> <span class="n">M</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">_bits_for_count</span><span class="p">(</span><span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Bits to index ``count`` items as 0..count-1 (0 when count &lt;= 1).</span>
 
-
-<span class="k">def</span><span class="w"> </span><span class="nf">_quat_scale_to_covar_preci</span><span class="p">(</span>
-    <span class="n">quats</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [..., 4],</span>
-    <span class="n">scales</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [..., 3],</span>
-    <span class="n">compute_covar</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
-    <span class="n">compute_preci</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
-    <span class="n">triu</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Optional</span><span class="p">[</span><span class="n">Tensor</span><span class="p">],</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Tensor</span><span class="p">]]:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;PyTorch implementation of `gsplat.cuda._wrapper.quat_scale_to_covar_preci()`.&quot;&quot;&quot;</span>
-    <span class="n">batch_dims</span> <span class="o">=</span> <span class="n">quats</span><span class="o">.</span><span class="n">shape</span><span class="p">[:</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
-    <span class="k">assert</span> <span class="n">quats</span><span class="o">.</span><span class="n">shape</span> <span class="o">==</span> <span class="n">batch_dims</span> <span class="o">+</span> <span class="p">(</span><span class="mi">4</span><span class="p">,),</span> <span class="n">quats</span><span class="o">.</span><span class="n">shape</span>
-    <span class="k">assert</span> <span class="n">scales</span><span class="o">.</span><span class="n">shape</span> <span class="o">==</span> <span class="n">batch_dims</span> <span class="o">+</span> <span class="p">(</span><span class="mi">3</span><span class="p">,),</span> <span class="n">scales</span><span class="o">.</span><span class="n">shape</span>
-    <span class="n">R</span> <span class="o">=</span> <span class="n">_quat_to_rotmat</span><span class="p">(</span><span class="n">quats</span><span class="p">)</span>  <span class="c1"># [..., 3, 3]</span>
-
-    <span class="k">if</span> <span class="n">compute_covar</span><span class="p">:</span>
-        <span class="n">M</span> <span class="o">=</span> <span class="n">R</span> <span class="o">*</span> <span class="n">scales</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="p">:]</span>  <span class="c1"># [..., 3, 3]</span>
-        <span class="n">covars</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">einsum</span><span class="p">(</span><span class="s2">&quot;...ij,...kj -&gt; ...ik&quot;</span><span class="p">,</span> <span class="n">M</span><span class="p">,</span> <span class="n">M</span><span class="p">)</span>  <span class="c1"># [..., 3, 3]</span>
-        <span class="k">if</span> <span class="n">triu</span><span class="p">:</span>
-            <span class="n">covars</span> <span class="o">=</span> <span class="n">covars</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">batch_dims</span> <span class="o">+</span> <span class="p">(</span><span class="mi">9</span><span class="p">,))</span>  <span class="c1"># [..., 9]</span>
-            <span class="n">covars</span> <span class="o">=</span> <span class="p">(</span>
-                <span class="n">covars</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">8</span><span class="p">]]</span> <span class="o">+</span> <span class="n">covars</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">6</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">7</span><span class="p">,</span> <span class="mi">8</span><span class="p">]]</span>
-            <span class="p">)</span> <span class="o">/</span> <span class="mf">2.0</span>  <span class="c1"># [..., 6]</span>
-    <span class="k">if</span> <span class="n">compute_preci</span><span class="p">:</span>
-        <span class="n">P</span> <span class="o">=</span> <span class="n">R</span> <span class="o">*</span> <span class="p">(</span><span class="mi">1</span> <span class="o">/</span> <span class="n">scales</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="p">:])</span>  <span class="c1"># [..., 3, 3]</span>
-        <span class="n">precis</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">einsum</span><span class="p">(</span><span class="s2">&quot;...ij,...kj -&gt; ...ik&quot;</span><span class="p">,</span> <span class="n">P</span><span class="p">,</span> <span class="n">P</span><span class="p">)</span>  <span class="c1"># [..., 3, 3]</span>
-        <span class="k">if</span> <span class="n">triu</span><span class="p">:</span>
-            <span class="n">precis</span> <span class="o">=</span> <span class="n">precis</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">batch_dims</span> <span class="o">+</span> <span class="p">(</span><span class="mi">9</span><span class="p">,))</span>  <span class="c1"># [..., 9]</span>
-            <span class="n">precis</span> <span class="o">=</span> <span class="p">(</span>
-                <span class="n">precis</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">8</span><span class="p">]]</span> <span class="o">+</span> <span class="n">precis</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">6</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">7</span><span class="p">,</span> <span class="mi">8</span><span class="p">]]</span>
-            <span class="p">)</span> <span class="o">/</span> <span class="mf">2.0</span>  <span class="c1"># [..., 6]</span>
-
-    <span class="k">return</span> <span class="n">covars</span> <span class="k">if</span> <span class="n">compute_covar</span> <span class="k">else</span> <span class="kc">None</span><span class="p">,</span> <span class="n">precis</span> <span class="k">if</span> <span class="n">compute_preci</span> <span class="k">else</span> <span class="kc">None</span>
+<span class="sd">    Mirrors ``gsplat::bits_for_count`` (MathUtils.h) so the (image, tile) id is</span>
+<span class="sd">    packed/unpacked with the same field widths as the CUDA kernels. ``count -</span>
+<span class="sd">    1`` matters for power-of-two counts: ``int.bit_length()`` over-counts them</span>
+<span class="sd">    (8 -&gt; 4 bits instead of 3).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="p">(</span><span class="n">count</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">bit_length</span><span class="p">()</span> <span class="k">if</span> <span class="n">count</span> <span class="o">&gt;</span> <span class="mi">1</span> <span class="k">else</span> <span class="mi">0</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_persp_proj</span><span class="p">(</span>
@@ -580,8 +562,9 @@
     <span class="n">means_c</span> <span class="o">=</span> <span class="p">(</span>
         <span class="n">torch</span><span class="o">.</span><span class="n">einsum</span><span class="p">(</span><span class="s2">&quot;...cij,...nj-&gt;...cni&quot;</span><span class="p">,</span> <span class="n">R</span><span class="p">,</span> <span class="n">means</span><span class="p">)</span> <span class="o">+</span> <span class="n">t</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="p">:]</span>
     <span class="p">)</span>  <span class="c1"># [..., C, N, 3]</span>
-    <span class="n">covars_c</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">einsum</span><span class="p">(</span>
-        <span class="s2">&quot;...cij,...njk,...clk-&gt;...cnil&quot;</span><span class="p">,</span> <span class="n">R</span><span class="p">,</span> <span class="n">covars</span><span class="p">,</span> <span class="n">R</span>
+    <span class="n">R_expanded</span> <span class="o">=</span> <span class="n">R</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="p">:,</span> <span class="kc">None</span><span class="p">,</span> <span class="p">:,</span> <span class="p">:]</span>  <span class="c1"># [..., C, 1, 3, 3]</span>
+    <span class="n">covars_c</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">R_expanded</span> <span class="o">@</span> <span class="n">covars</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="p">:,</span> <span class="p">:,</span> <span class="p">:]</span> <span class="o">@</span> <span class="n">R_expanded</span><span class="o">.</span><span class="n">transpose</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">2</span><span class="p">)</span>
     <span class="p">)</span>  <span class="c1"># [..., C, N, 3, 3]</span>
     <span class="k">return</span> <span class="n">means_c</span><span class="p">,</span> <span class="n">covars_c</span>
 
@@ -597,7 +580,7 @@
     <span class="n">near_plane</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.01</span><span class="p">,</span>
     <span class="n">far_plane</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e10</span><span class="p">,</span>
     <span class="n">calc_compensations</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-    <span class="n">camera_model</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;pinhole&quot;</span><span class="p">,</span> <span class="s2">&quot;ortho&quot;</span><span class="p">,</span> <span class="s2">&quot;fisheye&quot;</span><span class="p">,</span> <span class="s2">&quot;ftheta&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;pinhole&quot;</span><span class="p">,</span>
+    <span class="n">camera_model</span><span class="p">:</span> <span class="n">CameraModel</span> <span class="o">=</span> <span class="s2">&quot;pinhole&quot;</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">Tensor</span><span class="p">,</span> <span class="n">Tensor</span><span class="p">,</span> <span class="n">Tensor</span><span class="p">,</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Tensor</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;PyTorch implementation of `gsplat.cuda._wrapper.fully_fused_projection()`</span>
 
@@ -642,7 +625,9 @@
     <span class="n">det</span> <span class="o">=</span> <span class="n">det</span><span class="o">.</span><span class="n">clamp</span><span class="p">(</span><span class="nb">min</span><span class="o">=</span><span class="mf">1e-10</span><span class="p">)</span>
 
     <span class="k">if</span> <span class="n">calc_compensations</span><span class="p">:</span>
-        <span class="n">compensations</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">clamp</span><span class="p">(</span><span class="n">det_orig</span> <span class="o">/</span> <span class="n">det</span><span class="p">,</span> <span class="nb">min</span><span class="o">=</span><span class="mf">0.0</span><span class="p">))</span>
+        <span class="n">compensations</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span>
+            <span class="n">torch</span><span class="o">.</span><span class="n">clamp</span><span class="p">(</span><span class="n">det_orig</span> <span class="o">/</span> <span class="n">det</span><span class="p">,</span> <span class="nb">min</span><span class="o">=</span><span class="n">MIN_COMPENSATION</span> <span class="o">*</span> <span class="n">MIN_COMPENSATION</span><span class="p">)</span>
+        <span class="p">)</span>
     <span class="k">else</span><span class="p">:</span>
         <span class="n">compensations</span> <span class="o">=</span> <span class="kc">None</span>
 
@@ -726,8 +711,8 @@
     <span class="n">flatten_ids</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_isects</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
 
     <span class="n">cum_tiles_per_gauss</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cumsum</span><span class="p">(</span><span class="n">tiles_per_gauss</span><span class="o">.</span><span class="n">flatten</span><span class="p">(),</span> <span class="n">dim</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
-    <span class="n">image_n_bits</span> <span class="o">=</span> <span class="n">I</span><span class="o">.</span><span class="n">bit_length</span><span class="p">()</span>
-    <span class="n">tile_n_bits</span> <span class="o">=</span> <span class="p">(</span><span class="n">tile_width</span> <span class="o">*</span> <span class="n">tile_height</span><span class="p">)</span><span class="o">.</span><span class="n">bit_length</span><span class="p">()</span>
+    <span class="n">image_n_bits</span> <span class="o">=</span> <span class="n">_bits_for_count</span><span class="p">(</span><span class="n">I</span><span class="p">)</span>
+    <span class="n">tile_n_bits</span> <span class="o">=</span> <span class="n">_bits_for_count</span><span class="p">(</span><span class="n">tile_width</span> <span class="o">*</span> <span class="n">tile_height</span><span class="p">)</span>
     <span class="k">assert</span> <span class="n">image_n_bits</span> <span class="o">+</span> <span class="n">tile_n_bits</span> <span class="o">+</span> <span class="mi">32</span> <span class="o">&lt;=</span> <span class="mi">64</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">binary</span><span class="p">(</span><span class="n">num</span><span class="p">):</span>
@@ -787,7 +772,7 @@
 <span class="sd">        This is a minimal implementation of the fully fused version, which has more</span>
 <span class="sd">        arguments. Not all arguments are supported.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
-    <span class="n">tile_n_bits</span> <span class="o">=</span> <span class="p">(</span><span class="n">tile_width</span> <span class="o">*</span> <span class="n">tile_height</span><span class="p">)</span><span class="o">.</span><span class="n">bit_length</span><span class="p">()</span>
+    <span class="n">tile_n_bits</span> <span class="o">=</span> <span class="n">_bits_for_count</span><span class="p">(</span><span class="n">tile_width</span> <span class="o">*</span> <span class="n">tile_height</span><span class="p">)</span>
     <span class="n">tile_counts</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span>
         <span class="p">(</span><span class="n">I</span><span class="p">,</span> <span class="n">tile_height</span><span class="p">,</span> <span class="n">tile_width</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">isect_ids</span><span class="o">.</span><span class="n">device</span>
     <span class="p">)</span>
@@ -804,6 +789,235 @@
     <span class="n">cum_tile_counts</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cumsum</span><span class="p">(</span><span class="n">tile_counts</span><span class="o">.</span><span class="n">flatten</span><span class="p">(),</span> <span class="n">dim</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span><span class="o">.</span><span class="n">reshape_as</span><span class="p">(</span><span class="n">tile_counts</span><span class="p">)</span>
     <span class="n">offsets</span> <span class="o">=</span> <span class="n">cum_tile_counts</span> <span class="o">-</span> <span class="n">tile_counts</span>
     <span class="k">return</span> <span class="n">offsets</span><span class="o">.</span><span class="n">int</span><span class="p">()</span>
+
+
+<span class="nd">@torch</span><span class="o">.</span><span class="n">no_grad</span><span class="p">()</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">_isect_tiles_sparse</span><span class="p">(</span>
+    <span class="n">means2d</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [I, N, 2] or [nnz, 2] (packed)</span>
+    <span class="n">radii</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [I, N, 2] or [nnz, 2]</span>
+    <span class="n">depths</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [I, N] or [nnz]</span>
+    <span class="n">tile_mask</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [I, tile_height, tile_width] bool</span>
+    <span class="n">active_tiles</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [num_active_tiles] int32, ascending dense tile ids</span>
+    <span class="n">n_images</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">tile_size</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">tile_width</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">tile_height</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">image_ids</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Tensor</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>  <span class="c1"># [nnz] int32, required in packed mode</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">Tensor</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Pytorch reference for ``gsplat.cuda._wrapper.isect_tiles_sparse()``.</span>
+
+<span class="sd">    Restricts the tile-intersection enumeration to the tiles flagged active in</span>
+<span class="sd">    ``tile_mask`` and returns the *compacted* per-active-tile offset table:</span>
+
+<span class="sd">      * ``tile_offsets`` — int32 ``[num_active_tiles + 1]``. ``tile_offsets[i]``</span>
+<span class="sd">        is the exclusive prefix-sum start of the flatten-id range for</span>
+<span class="sd">        ``active_tiles[i]`` (active tiles in ascending dense-id order); the</span>
+<span class="sd">        trailing sentinel ``tile_offsets[-1] == n_isects``.</span>
+<span class="sd">      * ``flatten_ids`` — int32 ``[n_isects]``, the global flatten indices in</span>
+<span class="sd">        ``[I * N]`` (dense) or ``[nnz]`` (packed), sorted by</span>
+<span class="sd">        ``(image_id, tile_id, depth)`` near-to-far.</span>
+
+<span class="sd">    The dense tile id used by ``active_tiles`` is ``image_id * (tile_height *</span>
+<span class="sd">    tile_width) + (y * tile_width + x)``. A Gaussian&#39;s tile AABB</span>
+<span class="sd">    is ``[mean - radius, mean + radius]`` in pixel space; tiles outside the mask</span>
+<span class="sd">    are skipped. Gaussians with a non-positive radius on either axis contribute</span>
+<span class="sd">    nothing. This is an obviously-correct (looped) reference, not optimized.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">means2d</span><span class="o">.</span><span class="n">device</span>
+    <span class="n">n_tiles</span> <span class="o">=</span> <span class="n">tile_width</span> <span class="o">*</span> <span class="n">tile_height</span>
+    <span class="n">packed</span> <span class="o">=</span> <span class="n">means2d</span><span class="o">.</span><span class="n">dim</span><span class="p">()</span> <span class="o">==</span> <span class="mi">2</span>
+
+    <span class="k">if</span> <span class="n">packed</span><span class="p">:</span>
+        <span class="n">nnz</span> <span class="o">=</span> <span class="n">means2d</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="k">assert</span> <span class="n">image_ids</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">,</span> <span class="s2">&quot;image_ids is required in packed mode&quot;</span>
+        <span class="n">image_of</span> <span class="o">=</span> <span class="n">image_ids</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">nnz</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">)</span>
+        <span class="n">flat_of</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">nnz</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">)</span>
+        <span class="n">means</span> <span class="o">=</span> <span class="n">means2d</span>
+        <span class="n">rad</span> <span class="o">=</span> <span class="n">radii</span>
+        <span class="n">dep</span> <span class="o">=</span> <span class="n">depths</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">nnz</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">I</span><span class="p">,</span> <span class="n">N</span> <span class="o">=</span> <span class="n">means2d</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">means2d</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
+        <span class="n">nnz</span> <span class="o">=</span> <span class="n">I</span> <span class="o">*</span> <span class="n">N</span>
+        <span class="n">means</span> <span class="o">=</span> <span class="n">means2d</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">nnz</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>
+        <span class="n">rad</span> <span class="o">=</span> <span class="n">radii</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">nnz</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>
+        <span class="n">dep</span> <span class="o">=</span> <span class="n">depths</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">nnz</span><span class="p">)</span>
+        <span class="n">image_of</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">I</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span><span class="o">.</span><span class="n">repeat_interleave</span><span class="p">(</span><span class="n">N</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">)</span>
+        <span class="n">flat_of</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">nnz</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">)</span>
+
+    <span class="n">tile_mask</span> <span class="o">=</span> <span class="n">tile_mask</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">n_images</span><span class="p">,</span> <span class="n">tile_height</span><span class="p">,</span> <span class="n">tile_width</span><span class="p">)</span>
+
+    <span class="c1"># Per-Gaussian tile AABB (inclusive lower, exclusive upper), clamped to grid.</span>
+    <span class="n">tmean</span> <span class="o">=</span> <span class="n">means</span> <span class="o">/</span> <span class="n">tile_size</span>
+    <span class="n">trad</span> <span class="o">=</span> <span class="n">rad</span> <span class="o">/</span> <span class="n">tile_size</span>
+    <span class="n">tmin</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">floor</span><span class="p">(</span><span class="n">tmean</span> <span class="o">-</span> <span class="n">trad</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">)</span>
+    <span class="n">tmax</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">ceil</span><span class="p">(</span><span class="n">tmean</span> <span class="o">+</span> <span class="n">trad</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">)</span>
+    <span class="n">tmin_x</span> <span class="o">=</span> <span class="n">tmin</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">clamp</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">tile_width</span><span class="p">)</span>
+    <span class="n">tmin_y</span> <span class="o">=</span> <span class="n">tmin</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">clamp</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">tile_height</span><span class="p">)</span>
+    <span class="n">tmax_x</span> <span class="o">=</span> <span class="n">tmax</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">clamp</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">tile_width</span><span class="p">)</span>
+    <span class="n">tmax_y</span> <span class="o">=</span> <span class="n">tmax</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">clamp</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">tile_height</span><span class="p">)</span>
+    <span class="n">valid</span> <span class="o">=</span> <span class="p">(</span><span class="n">rad</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">rad</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span>
+
+    <span class="c1"># Narrow depth to float32 bit pattern (matches the kernel&#39;s 32-bit sort key);</span>
+    <span class="c1"># for positive depths the bit pattern is order-preserving.</span>
+    <span class="n">dep32</span> <span class="o">=</span> <span class="n">dep</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+
+    <span class="c1"># Pull loop scalars to CPU once to avoid per-element device syncs.</span>
+    <span class="n">image_l</span> <span class="o">=</span> <span class="n">image_of</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+    <span class="n">flat_l</span> <span class="o">=</span> <span class="n">flat_of</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+    <span class="n">valid_l</span> <span class="o">=</span> <span class="n">valid</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+    <span class="n">tmin_x_l</span><span class="p">,</span> <span class="n">tmin_y_l</span> <span class="o">=</span> <span class="n">tmin_x</span><span class="o">.</span><span class="n">tolist</span><span class="p">(),</span> <span class="n">tmin_y</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+    <span class="n">tmax_x_l</span><span class="p">,</span> <span class="n">tmax_y_l</span> <span class="o">=</span> <span class="n">tmax_x</span><span class="o">.</span><span class="n">tolist</span><span class="p">(),</span> <span class="n">tmax_y</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+    <span class="n">mask_cpu</span> <span class="o">=</span> <span class="n">tile_mask</span><span class="o">.</span><span class="n">cpu</span><span class="p">()</span>
+    <span class="n">dep32_cpu</span> <span class="o">=</span> <span class="n">dep32</span><span class="o">.</span><span class="n">cpu</span><span class="p">()</span>
+
+    <span class="n">g_keys</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>  <span class="c1"># global tile key: image_id * n_tiles + tile_id</span>
+    <span class="n">d_keys</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>  <span class="c1"># float32 depth bits (uint32)</span>
+    <span class="n">f_ids</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>  <span class="c1"># flatten index</span>
+    <span class="k">for</span> <span class="n">m</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">nnz</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">valid_l</span><span class="p">[</span><span class="n">m</span><span class="p">]:</span>
+            <span class="k">continue</span>
+        <span class="n">image_id</span> <span class="o">=</span> <span class="n">image_l</span><span class="p">[</span><span class="n">m</span><span class="p">]</span>
+        <span class="n">depth_bits</span> <span class="o">=</span> <span class="n">struct</span><span class="o">.</span><span class="n">unpack</span><span class="p">(</span><span class="s2">&quot;I&quot;</span><span class="p">,</span> <span class="n">struct</span><span class="o">.</span><span class="n">pack</span><span class="p">(</span><span class="s2">&quot;f&quot;</span><span class="p">,</span> <span class="nb">float</span><span class="p">(</span><span class="n">dep32_cpu</span><span class="p">[</span><span class="n">m</span><span class="p">])))[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="k">for</span> <span class="n">y</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">tmin_y_l</span><span class="p">[</span><span class="n">m</span><span class="p">],</span> <span class="n">tmax_y_l</span><span class="p">[</span><span class="n">m</span><span class="p">]):</span>
+            <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">tmin_x_l</span><span class="p">[</span><span class="n">m</span><span class="p">],</span> <span class="n">tmax_x_l</span><span class="p">[</span><span class="n">m</span><span class="p">]):</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="nb">bool</span><span class="p">(</span><span class="n">mask_cpu</span><span class="p">[</span><span class="n">image_id</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">x</span><span class="p">]):</span>
+                    <span class="k">continue</span>
+                <span class="n">tile_id</span> <span class="o">=</span> <span class="n">y</span> <span class="o">*</span> <span class="n">tile_width</span> <span class="o">+</span> <span class="n">x</span>
+                <span class="n">g_keys</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">image_id</span> <span class="o">*</span> <span class="n">n_tiles</span> <span class="o">+</span> <span class="n">tile_id</span><span class="p">)</span>
+                <span class="n">d_keys</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">depth_bits</span><span class="p">)</span>
+                <span class="n">f_ids</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">flat_l</span><span class="p">[</span><span class="n">m</span><span class="p">])</span>
+
+    <span class="n">n_isects</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">f_ids</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">n_isects</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">tile_offsets</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span>
+            <span class="n">active_tiles</span><span class="o">.</span><span class="n">numel</span><span class="p">()</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
+        <span class="p">)</span>
+        <span class="n">flatten_ids</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">tile_offsets</span><span class="p">,</span> <span class="n">flatten_ids</span>
+
+    <span class="n">g_t</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(</span><span class="n">g_keys</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">d_t</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(</span><span class="n">d_keys</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">fid_t</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(</span><span class="n">f_ids</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+
+    <span class="c1"># Lexicographic sort by (global tile key, depth bits).</span>
+    <span class="n">sort_key</span> <span class="o">=</span> <span class="p">(</span><span class="n">g_t</span> <span class="o">&lt;&lt;</span> <span class="mi">32</span><span class="p">)</span> <span class="o">|</span> <span class="n">d_t</span>
+    <span class="n">order</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">argsort</span><span class="p">(</span><span class="n">sort_key</span><span class="p">)</span>
+    <span class="n">g_sorted</span> <span class="o">=</span> <span class="n">g_t</span><span class="p">[</span><span class="n">order</span><span class="p">]</span>
+    <span class="n">flatten_ids</span> <span class="o">=</span> <span class="n">fid_t</span><span class="p">[</span><span class="n">order</span><span class="p">]</span><span class="o">.</span><span class="n">contiguous</span><span class="p">()</span>
+
+    <span class="c1"># Compacted offsets: first position of each active tile&#39;s range in g_sorted.</span>
+    <span class="n">active</span> <span class="o">=</span> <span class="n">active_tiles</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">)</span>
+    <span class="n">starts</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">searchsorted</span><span class="p">(</span><span class="n">g_sorted</span><span class="p">,</span> <span class="n">active</span><span class="p">,</span> <span class="n">right</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span>
+    <span class="n">tile_offsets</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cat</span><span class="p">(</span>
+        <span class="p">[</span><span class="n">starts</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">([</span><span class="n">n_isects</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)]</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">tile_offsets</span><span class="p">,</span> <span class="n">flatten_ids</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_num_words_per_tile_bitmask</span><span class="p">(</span><span class="n">tile_size</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Number of int64 words needed to bit-pack a ``tile_size x tile_size`` tile.&quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="p">(</span><span class="n">tile_size</span> <span class="o">*</span> <span class="n">tile_size</span> <span class="o">+</span> <span class="mi">63</span><span class="p">)</span> <span class="o">//</span> <span class="mi">64</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_build_sparse_tile_layout</span><span class="p">(</span>
+    <span class="n">pixels</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [P, 2] int, (row, col) == (y, x)</span>
+    <span class="n">image_ids</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [P] int, image/camera index of each pixel</span>
+    <span class="n">n_images</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">tile_size</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">tile_width</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">tile_height</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">Tensor</span><span class="p">,</span> <span class="n">Tensor</span><span class="p">,</span> <span class="n">Tensor</span><span class="p">,</span> <span class="n">Tensor</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Pytorch reference for ``gsplat.cuda._wrapper.build_sparse_tile_layout()``.</span>
+
+<span class="sd">    Builds the per-active-tile layout that sparse rasterization consumes. Pixels</span>
+<span class="sd">    are given in packed form (``pixels`` + ``image_ids``) rather than as a single</span>
+<span class="sd">    ragged batch.</span>
+
+<span class="sd">    Coordinate convention: ``pixels[p] = (row, col)`` with ``row`` in</span>
+<span class="sd">    ``[0, height)`` and ``col`` in ``[0, width)``. A pixel&#39;s dense tile id is</span>
+<span class="sd">    ``image_id * (tile_height * tile_width) + (row // tile_size) * tile_width +</span>
+<span class="sd">    (col // tile_size)`` and its raster-order position within a tile is</span>
+<span class="sd">    ``(row % tile_size) * tile_size + (col % tile_size)``.</span>
+
+<span class="sd">    Returns (see ``build_sparse_tile_layout`` for full semantics):</span>
+<span class="sd">      * ``active_tiles`` -- int32 ``[AT]``, ascending dense ids of tiles holding</span>
+<span class="sd">        &gt;= 1 active pixel.</span>
+<span class="sd">      * ``active_tile_mask`` -- bool ``[n_images, tile_height, tile_width]``.</span>
+<span class="sd">      * ``tile_pixel_mask`` -- uint64 ``[AT, words_per_tile]`` raster-order bitmask</span>
+<span class="sd">        of active pixels per active tile (``words_per_tile =</span>
+<span class="sd">        ceil(tile_size^2 / 64)``).</span>
+<span class="sd">      * ``tile_pixel_cumsum`` -- int64 ``[AT]``, *inclusive* prefix sum of the</span>
+<span class="sd">        active-pixel count per active tile (consumers read ``cumsum[t-1]`` as the</span>
+<span class="sd">        start of active tile ``t``).</span>
+<span class="sd">      * ``pixel_map`` -- int64 ``[P]``, the argsort taking pixels to</span>
+<span class="sd">        (tile_id, in-tile) sorted order (the write order within tiles).</span>
+
+<span class="sd">    PRECONDITION: ``pixels`` contains no duplicate (image, row, col); callers</span>
+<span class="sd">    deduplicate first. This is an obvious-correct (looped) reference.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">pixels</span><span class="o">.</span><span class="n">device</span>
+    <span class="n">n_tiles</span> <span class="o">=</span> <span class="n">tile_width</span> <span class="o">*</span> <span class="n">tile_height</span>
+    <span class="n">words</span> <span class="o">=</span> <span class="n">_num_words_per_tile_bitmask</span><span class="p">(</span><span class="n">tile_size</span><span class="p">)</span>
+    <span class="n">P</span> <span class="o">=</span> <span class="n">pixels</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+
+    <span class="k">if</span> <span class="n">P</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">n_images</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">(</span>
+            <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
+            <span class="n">torch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span>
+                <span class="n">n_images</span><span class="p">,</span> <span class="n">tile_height</span><span class="p">,</span> <span class="n">tile_width</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
+            <span class="p">),</span>
+            <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">words</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">uint64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
+            <span class="n">torch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
+            <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
+        <span class="p">)</span>
+
+    <span class="n">rows</span> <span class="o">=</span> <span class="n">pixels</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">)</span>
+    <span class="n">cols</span> <span class="o">=</span> <span class="n">pixels</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">)</span>
+    <span class="n">img</span> <span class="o">=</span> <span class="n">image_ids</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">P</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">)</span>
+
+    <span class="n">tile_row</span> <span class="o">=</span> <span class="n">rows</span> <span class="o">//</span> <span class="n">tile_size</span>
+    <span class="n">tile_col</span> <span class="o">=</span> <span class="n">cols</span> <span class="o">//</span> <span class="n">tile_size</span>
+    <span class="n">tile_id</span> <span class="o">=</span> <span class="n">img</span> <span class="o">*</span> <span class="n">n_tiles</span> <span class="o">+</span> <span class="n">tile_row</span> <span class="o">*</span> <span class="n">tile_width</span> <span class="o">+</span> <span class="n">tile_col</span>
+    <span class="n">pix_in_tile</span> <span class="o">=</span> <span class="p">(</span><span class="n">rows</span> <span class="o">%</span> <span class="n">tile_size</span><span class="p">)</span> <span class="o">*</span> <span class="n">tile_size</span> <span class="o">+</span> <span class="p">(</span><span class="n">cols</span> <span class="o">%</span> <span class="n">tile_size</span><span class="p">)</span>
+
+    <span class="c1"># Per-tile activity mask over the dense [n_images, TH, TW] grid.</span>
+    <span class="n">active_tile_mask</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_images</span> <span class="o">*</span> <span class="n">n_tiles</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">active_tile_mask</span><span class="p">[</span><span class="n">tile_id</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>
+    <span class="n">active_tile_mask</span> <span class="o">=</span> <span class="n">active_tile_mask</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">n_images</span><span class="p">,</span> <span class="n">tile_height</span><span class="p">,</span> <span class="n">tile_width</span><span class="p">)</span>
+
+    <span class="c1"># Sort pixels by (tile_id, in-tile position); pixel_map is the argsort.</span>
+    <span class="n">key</span> <span class="o">=</span> <span class="p">(</span><span class="n">tile_id</span> <span class="o">&lt;&lt;</span> <span class="mi">32</span><span class="p">)</span> <span class="o">|</span> <span class="n">pix_in_tile</span>
+    <span class="n">pixel_map</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">argsort</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">stable</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">tile_id_sorted</span> <span class="o">=</span> <span class="n">tile_id</span><span class="p">[</span><span class="n">pixel_map</span><span class="p">]</span>
+    <span class="n">pix_in_tile_sorted</span> <span class="o">=</span> <span class="n">pix_in_tile</span><span class="p">[</span><span class="n">pixel_map</span><span class="p">]</span>
+
+    <span class="c1"># Run-length encode the sorted tile ids -&gt; active tiles + per-tile counts.</span>
+    <span class="n">active_tiles</span><span class="p">,</span> <span class="n">counts</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">unique_consecutive</span><span class="p">(</span><span class="n">tile_id_sorted</span><span class="p">,</span> <span class="n">return_counts</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">active_tiles</span> <span class="o">=</span> <span class="n">active_tiles</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span>
+    <span class="n">tile_pixel_cumsum</span> <span class="o">=</span> <span class="n">counts</span><span class="o">.</span><span class="n">cumsum</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>  <span class="c1"># inclusive</span>
+
+    <span class="c1"># Per-active-tile raster-order bitmask.</span>
+    <span class="n">AT</span> <span class="o">=</span> <span class="n">active_tiles</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="n">starts_l</span> <span class="o">=</span> <span class="p">(</span><span class="n">tile_pixel_cumsum</span> <span class="o">-</span> <span class="n">counts</span><span class="p">)</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+    <span class="n">counts_l</span> <span class="o">=</span> <span class="n">counts</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+    <span class="n">pit_cpu</span> <span class="o">=</span> <span class="n">pix_in_tile_sorted</span><span class="o">.</span><span class="n">cpu</span><span class="p">()</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+    <span class="n">mask_words</span> <span class="o">=</span> <span class="p">[[</span><span class="mi">0</span><span class="p">]</span> <span class="o">*</span> <span class="n">words</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">AT</span><span class="p">)]</span>
+    <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">AT</span><span class="p">):</span>
+        <span class="n">s</span> <span class="o">=</span> <span class="n">starts_l</span><span class="p">[</span><span class="n">t</span><span class="p">]</span>
+        <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">s</span><span class="p">,</span> <span class="n">s</span> <span class="o">+</span> <span class="n">counts_l</span><span class="p">[</span><span class="n">t</span><span class="p">]):</span>
+            <span class="n">bit</span> <span class="o">=</span> <span class="n">pit_cpu</span><span class="p">[</span><span class="n">k</span><span class="p">]</span>
+            <span class="n">mask_words</span><span class="p">[</span><span class="n">t</span><span class="p">][</span><span class="n">bit</span> <span class="o">//</span> <span class="mi">64</span><span class="p">]</span> <span class="o">|=</span> <span class="mi">1</span> <span class="o">&lt;&lt;</span> <span class="p">(</span><span class="n">bit</span> <span class="o">%</span> <span class="mi">64</span><span class="p">)</span>
+    <span class="n">tile_pixel_mask</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(</span>
+        <span class="n">mask_words</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">uint64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
+    <span class="p">)</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">AT</span><span class="p">,</span> <span class="n">words</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="p">(</span>
+        <span class="n">active_tiles</span><span class="p">,</span>
+        <span class="n">active_tile_mask</span><span class="p">,</span>
+        <span class="n">tile_pixel_mask</span><span class="p">,</span>
+        <span class="n">tile_pixel_cumsum</span><span class="p">,</span>
+        <span class="n">pixel_map</span><span class="p">,</span>
+    <span class="p">)</span>
 
 
 <div class="viewcode-block" id="accumulate">
@@ -887,7 +1101,7 @@
         <span class="o">+</span> <span class="n">c</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">*</span> <span class="n">deltas</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">*</span> <span class="n">deltas</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span>
     <span class="p">)</span>  <span class="c1"># [M]</span>
     <span class="n">alphas</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">clamp_max</span><span class="p">(</span>
-        <span class="n">opacities</span><span class="p">[</span><span class="n">image_ids</span><span class="p">,</span> <span class="n">gaussian_ids</span><span class="p">]</span> <span class="o">*</span> <span class="n">torch</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="o">-</span><span class="n">sigmas</span><span class="p">),</span> <span class="mf">0.999</span>
+        <span class="n">opacities</span><span class="p">[</span><span class="n">image_ids</span><span class="p">,</span> <span class="n">gaussian_ids</span><span class="p">]</span> <span class="o">*</span> <span class="n">torch</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="o">-</span><span class="n">sigmas</span><span class="p">),</span> <span class="n">MAX_ALPHA</span>
     <span class="p">)</span>
 
     <span class="n">indices</span> <span class="o">=</span> <span class="n">image_ids</span> <span class="o">*</span> <span class="n">image_height</span> <span class="o">*</span> <span class="n">image_width</span> <span class="o">+</span> <span class="n">pixel_ids</span>
@@ -1023,6 +1237,47 @@
     <span class="k">return</span> <span class="n">render_colors</span><span class="p">,</span> <span class="n">render_alphas</span>
 
 
+<span class="k">def</span><span class="w"> </span><span class="nf">_rasterize_to_pixels_sparse</span><span class="p">(</span>
+    <span class="n">means2d</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [I, N, 2]</span>
+    <span class="n">conics</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [I, N, 3]</span>
+    <span class="n">colors</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [I, N, channels]</span>
+    <span class="n">opacities</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [I, N]</span>
+    <span class="n">pixels</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [P, 2] (row, col)</span>
+    <span class="n">image_ids</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [P]</span>
+    <span class="n">image_width</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">image_height</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">tile_size</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">isect_offsets</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [I, tile_height, tile_width]</span>
+    <span class="n">flatten_ids</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [n_isects]</span>
+    <span class="n">backgrounds</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Tensor</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>  <span class="c1"># [I, channels]</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">Tensor</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Pytorch reference for `gsplat.cuda._wrapper.rasterize_to_pixels_sparse()`.</span>
+
+<span class="sd">    The sparse rasterizer is defined to produce, at each requested pixel, exactly</span>
+<span class="sd">    the dense rendering result. So this reference renders the full dense images</span>
+<span class="sd">    with :func:`_rasterize_to_pixels` and gathers the requested pixels, packed in</span>
+<span class="sd">    original-pixel order (``[P, ...]``). Masks are not modeled here.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">render_colors</span><span class="p">,</span> <span class="n">render_alphas</span> <span class="o">=</span> <span class="n">_rasterize_to_pixels</span><span class="p">(</span>
+        <span class="n">means2d</span><span class="p">,</span>
+        <span class="n">conics</span><span class="p">,</span>
+        <span class="n">colors</span><span class="p">,</span>
+        <span class="n">opacities</span><span class="p">,</span>
+        <span class="n">image_width</span><span class="p">,</span>
+        <span class="n">image_height</span><span class="p">,</span>
+        <span class="n">tile_size</span><span class="p">,</span>
+        <span class="n">isect_offsets</span><span class="p">,</span>
+        <span class="n">flatten_ids</span><span class="p">,</span>
+        <span class="n">backgrounds</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">img</span> <span class="o">=</span> <span class="n">image_ids</span><span class="o">.</span><span class="n">long</span><span class="p">()</span>
+    <span class="n">rows</span> <span class="o">=</span> <span class="n">pixels</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">long</span><span class="p">()</span>
+    <span class="n">cols</span> <span class="o">=</span> <span class="n">pixels</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">long</span><span class="p">()</span>
+    <span class="n">out_colors</span> <span class="o">=</span> <span class="n">render_colors</span><span class="p">[</span><span class="n">img</span><span class="p">,</span> <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">]</span>  <span class="c1"># [P, channels]</span>
+    <span class="n">out_alphas</span> <span class="o">=</span> <span class="n">render_alphas</span><span class="p">[</span><span class="n">img</span><span class="p">,</span> <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">]</span>  <span class="c1"># [P, 1]</span>
+    <span class="k">return</span> <span class="n">out_colors</span><span class="p">,</span> <span class="n">out_alphas</span>
+
+
 <span class="k">def</span><span class="w"> </span><span class="nf">_eval_sh_bases_fast</span><span class="p">(</span><span class="n">basis_dim</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">dirs</span><span class="p">:</span> <span class="n">Tensor</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    Evaluate spherical harmonics bases at unit direction for high orders</span>
@@ -1109,21 +1364,18 @@
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_spherical_harmonics</span><span class="p">(</span>
     <span class="n">degrees_to_use</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
-    <span class="n">dirs</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [..., 3]</span>
-    <span class="n">coeffs</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [..., K, 3]</span>
+    <span class="n">dirs</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [..., N, 3]</span>
+    <span class="n">coeffs</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span>  <span class="c1"># [N, K, D]</span>
 <span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Pytorch implementation of `gsplat.cuda._wrapper.spherical_harmonics()`.&quot;&quot;&quot;</span>
+    <span class="k">assert</span> <span class="n">dirs</span><span class="o">.</span><span class="n">dim</span><span class="p">()</span> <span class="o">&gt;=</span> <span class="mi">2</span> <span class="ow">and</span> <span class="n">dirs</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">==</span> <span class="mi">3</span><span class="p">,</span> <span class="n">dirs</span><span class="o">.</span><span class="n">shape</span>
+    <span class="k">assert</span> <span class="n">coeffs</span><span class="o">.</span><span class="n">dim</span><span class="p">()</span> <span class="o">==</span> <span class="mi">3</span> <span class="ow">and</span> <span class="n">coeffs</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">&gt;=</span> <span class="mi">1</span><span class="p">,</span> <span class="n">coeffs</span><span class="o">.</span><span class="n">shape</span>
+    <span class="k">assert</span> <span class="n">coeffs</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="n">dirs</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">],</span> <span class="p">(</span><span class="n">coeffs</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span> <span class="n">dirs</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>
     <span class="k">assert</span> <span class="p">(</span><span class="n">degrees_to_use</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">**</span> <span class="mi">2</span> <span class="o">&lt;=</span> <span class="n">coeffs</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">],</span> <span class="n">coeffs</span><span class="o">.</span><span class="n">shape</span>
-    <span class="n">batch_dims</span> <span class="o">=</span> <span class="n">dirs</span><span class="o">.</span><span class="n">shape</span><span class="p">[:</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
-    <span class="k">assert</span> <span class="n">dirs</span><span class="o">.</span><span class="n">shape</span> <span class="o">==</span> <span class="n">batch_dims</span> <span class="o">+</span> <span class="p">(</span><span class="mi">3</span><span class="p">,),</span> <span class="n">dirs</span><span class="o">.</span><span class="n">shape</span>
-    <span class="k">assert</span> <span class="p">(</span>
-        <span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">coeffs</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span> <span class="o">==</span> <span class="nb">len</span><span class="p">(</span><span class="n">batch_dims</span><span class="p">)</span> <span class="o">+</span> <span class="mi">2</span><span class="p">)</span>
-        <span class="ow">and</span> <span class="n">coeffs</span><span class="o">.</span><span class="n">shape</span><span class="p">[:</span><span class="o">-</span><span class="mi">2</span><span class="p">]</span> <span class="o">==</span> <span class="n">batch_dims</span>
-        <span class="ow">and</span> <span class="n">coeffs</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">==</span> <span class="mi">3</span>
-    <span class="p">),</span> <span class="n">coeffs</span><span class="o">.</span><span class="n">shape</span>
+    <span class="n">K</span> <span class="o">=</span> <span class="n">coeffs</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
     <span class="n">dirs</span> <span class="o">=</span> <span class="n">F</span><span class="o">.</span><span class="n">normalize</span><span class="p">(</span><span class="n">dirs</span><span class="p">,</span> <span class="n">p</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="n">dim</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>
     <span class="n">num_bases</span> <span class="o">=</span> <span class="p">(</span><span class="n">degrees_to_use</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">**</span> <span class="mi">2</span>
-    <span class="n">bases</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">zeros_like</span><span class="p">(</span><span class="n">coeffs</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="mi">0</span><span class="p">])</span>
+    <span class="n">bases</span> <span class="o">=</span> <span class="n">coeffs</span><span class="o">.</span><span class="n">new_zeros</span><span class="p">(</span><span class="n">dirs</span><span class="o">.</span><span class="n">shape</span><span class="p">[:</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">+</span> <span class="p">(</span><span class="n">K</span><span class="p">,))</span>
     <span class="n">bases</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="p">:</span><span class="n">num_bases</span><span class="p">]</span> <span class="o">=</span> <span class="n">_eval_sh_bases_fast</span><span class="p">(</span><span class="n">num_bases</span><span class="p">,</span> <span class="n">dirs</span><span class="p">)</span>
     <span class="k">return</span> <span class="p">(</span><span class="n">bases</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">*</span> <span class="n">coeffs</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">dim</span><span class="o">=-</span><span class="mi">2</span><span class="p">)</span>
 </pre></div>
@@ -1159,7 +1411,7 @@
     </aside>
   </div>
 </div><script src="../../../_static/documentation_options.js?v=5929fcd5"></script>
-    <script src="../../../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../../../_static/doctools.js?v=9bcbadda"></script>
     <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../_static/scripts/furo.js?v=46bd48cc"></script>
     </body>

@@ -5,7 +5,7 @@
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="index" title="Index" href="../genindex.html"><link rel="search" title="Search" href="../search.html"><link rel="next" title="Profiling" href="profile.html"><link rel="prev" title="Utils" href="../apis/utils.html">
 
-    <!-- Generated with Sphinx 7.4.7 and Furo 2025.12.19 -->
+    <!-- Generated with Sphinx 8.1.3 and Furo 2025.12.19 -->
         <title>Evaluation - gsplat documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../_static/styles/furo.css?v=7bdb33bb" />
@@ -245,8 +245,10 @@
   <p class="caption" role="heading"><span class="caption-text">Examples</span></p>
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../examples/colmap.html">Fit a COLMAP Capture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../examples/dynamic_surgical.html">Dynamic Surgical Scene Reconstruction (G-SHARP port, experimental)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../examples/image.html">Fit a Single Image</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../examples/large_scale.html">Render a Large Scene</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../examples/ncore.html">Train on an NCore v4 Capture</a></li>
 </ul>
 <p class="caption" role="heading"><span class="caption-text">Conventions</span></p>
 <ul>
@@ -255,6 +257,7 @@
 <p class="caption" role="heading"><span class="caption-text">Python API</span></p>
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../apis/compression.html">Compression</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../apis/contrib.html">gsplat.contrib (experimental)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../apis/rasterization.html">Rasterization</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../apis/strategy.html">Densification</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../apis/utils.html">Utils</a></li>
@@ -269,6 +272,10 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="../migration/migration_inria.html">Migrate from diff-gaussian-rasterization</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../migration/migration_legacy.html">Migrate from gsplat v0.1.11</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Proposals</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../proposals/gsharp_v0_2_port.html">G-SHARP v0.2 Integration Proposal</a></li>
 </ul>
 
 </div>
@@ -785,7 +792,7 @@ is different from what’s reported in the original paper that uses
 within the gsplat repo (commit 6acdce4).</p>
 <p>The evaluation of <cite>inria-X</cite> can be
 reproduced with our forked wersion of the official implementation at
-<a class="reference external" href="https://github.com/liruilong940607/gaussian-splatting/tree/benchmark">here</a>,
+<a class="reference external" href="https://github.com/liruilong940607/gaussian-splatting/tree/benchmark">benchmark branch of our gaussian-splatting fork</a>,
 with the command <code class="code docutils literal notranslate"><span class="pre">python</span> <span class="pre">full_eval_m360.py</span></code> (commit 36546ce).</p>
 </section>
 <section id="id1">
@@ -793,8 +800,9 @@ with the command <code class="code docutils literal notranslate"><span class="pr
 </section>
 <section id="no-regularization">
 <h2>No Regularization<a class="headerlink" href="#no-regularization" title="Link to this heading">¶</a></h2>
-<div class="table-wrapper docutils container">
-<table class="docutils align-default">
+<div class="table-wrapper docutils container" id="id5">
+<table class="docutils align-default" id="id5">
+<caption><span class="caption-text">Performance on <a class="reference external" href="https://jonbarron.info/mipnerf360/">Mip-NeRF 360 Captures</a> (Averaged Over 7 Scenes)</span><a class="headerlink" href="#id5" title="Link to this table">¶</a></caption>
 <thead>
 <tr class="row-odd"><th class="head"></th>
 <th class="head"><p>PSNR</p></th>
@@ -928,8 +936,8 @@ with the command <code class="code docutils literal notranslate"><span class="pr
 </table>
 </div>
 </section>
-<section id="id2">
-<h2>Reproduced Metrics<a class="headerlink" href="#id2" title="Link to this heading">¶</a></h2>
+<section id="id3">
+<h2>Reproduced Metrics<a class="headerlink" href="#id3" title="Link to this heading">¶</a></h2>
 <div class="table-wrapper docutils container">
 <table class="docutils align-default">
 <thead>
@@ -1079,7 +1087,7 @@ is different from what’s reported in the original paper that uses
 within the gsplat repo (commit 48abf70).</p>
 <p>The evaluation of <cite>inria-X</cite> can be
 reproduced with our forked wersion of the official implementation at
-<a class="reference external" href="https://github.com/hbb1/diff-surfel-rasterization">here</a>;
+<a class="reference external" href="https://github.com/hbb1/diff-surfel-rasterization">diff-surfel-rasterization repo</a>;
 you need to change the <code class="code docutils literal notranslate"><span class="pre">--model_type</span> <span class="pre">2dgs</span></code> to <code class="code docutils literal notranslate"><span class="pre">--model_type</span> <span class="pre">2dgs-inria</span></code> in
 <code class="code docutils literal notranslate"><span class="pre">benchmars/basic_2dgs</span></code> and run command <code class="code docutils literal notranslate"><span class="pre">cd</span> <span class="pre">examples;</span> <span class="pre">bash</span> <span class="pre">benchmarks/basic_2dgs.sh</span></code> (commit 28c928a).</p>
 </section>
@@ -1149,7 +1157,7 @@ you need to change the <code class="code docutils literal notranslate"><span cla
 <li><a class="reference internal" href="#no-regularization">No Regularization</a></li>
 <li><a class="reference internal" href="#with-normal-consistency-and-distortion-regularization">With Normal Consistency and Distortion Regularization</a></li>
 <li><a class="reference internal" href="#runtime-and-gpu-memory">Runtime and GPU Memory</a></li>
-<li><a class="reference internal" href="#id2">Reproduced Metrics</a></li>
+<li><a class="reference internal" href="#id3">Reproduced Metrics</a></li>
 </ul>
 </li>
 </ul>
@@ -1162,7 +1170,7 @@ you need to change the <code class="code docutils literal notranslate"><span cla
     </aside>
   </div>
 </div><script src="../_static/documentation_options.js?v=5929fcd5"></script>
-    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
     <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../_static/scripts/furo.js?v=46bd48cc"></script>
     </body>
